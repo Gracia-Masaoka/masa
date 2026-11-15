@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b7a3e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>業10 月島四丁目 → 新橋</title>
+<style>
+  :root{--g:#0b7a3e;--g2:#e8f4ec;--ink:#1b1f1c;--sub:#5d665f;--line:#e2e6e3;--warn:#c25400}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;color:var(--ink);background:#f6f8f6}
+  header{background:var(--g);color:#fff;padding:14px 18px 16px}
+  .route{display:inline-block;background:#fff;color:var(--g);font-weight:800;border-radius:6px;padding:2px 9px;font-size:15px}
+  header h1{margin:8px 0 0;font-size:22px;letter-spacing:.02em}
+  header p{margin:2px 0 0;font-size:14px;opacity:.9}
+  main{max-width:520px;margin:0 auto;padding:16px}
+  .hero{background:#fff;border-radius:18px;padding:22px 20px;box-shadow:0 1px 3px rgba(0,0,0,.08);text-align:center}
+  .hero .lbl{font-size:14px;color:var(--sub)}
+  .hero .min{font-size:84px;font-weight:800;line-height:1.05;color:var(--g);font-variant-numeric:tabular-nums}
+  .hero .min small{font-size:26px;font-weight:700;margin-left:4px}
+  .hero .soon{font-size:52px;font-weight:800;color:var(--warn);line-height:1.3}
+  .hero .info{margin-top:6px;font-size:15px;color:var(--sub);line-height:1.6}
+  .hero .none{font-size:20px;font-weight:700;padding:16px 0;color:var(--sub)}
+  h2{font-size:14px;color:var(--sub);margin:22px 4px 8px;font-weight:600}
+  ul{list-style:none;margin:0;padding:0;background:#fff;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+  li{display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid var(--line)}
+  li:first-child{border-top:0}
+  li .m{min-width:72px;font-size:24px;font-weight:800;color:var(--g);font-variant-numeric:tabular-nums}
+  li .m small{font-size:13px;margin-left:2px}
+  li .d{font-size:13px;color:var(--sub);line-height:1.5}
+  li .d b{color:var(--ink);font-weight:600}
+  li.sched .m{color:var(--sub)}
+  .tag{display:inline-block;font-size:11px;border-radius:4px;padding:1px 6px;margin-right:4px;background:var(--g2);color:var(--g);font-weight:700}
+  .tag.s{background:#eef0ef;color:var(--sub)}
+  .bar{display:flex;justify-content:space-between;align-items:center;margin-top:18px;font-size:13px;color:var(--sub)}
+  button{font:inherit;font-size:14px;border:1px solid var(--g);color:var(--g);background:#fff;border-radius:999px;padding:7px 16px;cursor:pointer}
+  button:active{background:var(--g2)}
+  .err{margin-top:12px;color:#b00020;font-size:13px;text-align:center}
+  footer{max-width:520px;margin:6px auto 30px;padding:0 20px;font-size:12px;color:var(--sub);line-height:1.7}
+  footer a{color:var(--g)}
+</style>
+</head>
+<body>
+<header>
+  <span class="route">業10</span>
+  <h1>月島四丁目</h1>
+  <p>新橋行 のりば</p>
+</header>
+<main>
+  <section class="hero" id="hero"><div class="none">読み込み中…</div></section>
+  <h2>このあとのバス</h2>
+  <ul id="list"></ul>
+  <div class="bar"><span id="upd">—</span><button id="reload">更新</button></div>
+  <div class="err" id="err"></div>
+</main>
+<footer>
+  車両位置は約30秒ごとに自動更新。到着予想は「時刻表＋現在の遅れ」から計算した目安です。<br>
+  データ：公共交通オープンデータセンター（東京都交通局）／
+  <a href="https://tobus.jp/sp/blsys/stop?stopid=938&ud=2&poleno=2&ln=ja&routecode=40" target="_blank" rel="noopener">都バス運行情報サービスで確認</a>
+</footer>
+
+<script>
+const API = 'https://api-public.odpt.org/api/v4/';
+const POLE = 'odpt.BusstopPole:Toei.TsukishimaYonchome.938.2';
+const ROUTES = ['odpt.Busroute:Toei.Nari10', 'odpt.Busroute:Toei.Nari10Shutsunyuu'];
+const REFRESH_MS = 30000;
+
+const ttCache = new Map();          // BusTimetable id -> object
+let calendarId = null, calendarDate = null, poleTT = [];
+let state = { live: [], sched: [], fetchedAt: null };
+
+const $ = id => document.getElementById(id);
+const get = async (path, tries = 2) => {
+  for (let i = 0; ; i++) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 15000);
+      const r = await fetch(API + path, { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) {
+      if (i + 1 >= tries) throw e;
+      await new Promise(res => setTimeout(res, 1000));
+    }
+  }
+};
+const jstDate = (d = new Date()) => new Date(d.getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+const hhmm = d => d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' });
+const poleName = obj => (obj['odpt:note'] || '').split(':')[0] || '';
+
+// "HH:MM" -> Date, placed on the day closest to ref
+function toDate(hm, ref) {
+  let [h, m] = hm.split(':').map(Number);
+  const extra = Math.floor(h / 24); h %= 24;
+  const base = jstDate(ref);
+  let d = new Date(`${base}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+09:00`);
+  d = new Date(d.getTime() + extra * 864e5);
+  if (d - ref > 12 * 3600e3) d = new Date(d - 864e5);
+  if (ref - d > 12 * 3600e3) d = new Date(+d + 864e5);
+  return d;
+}
+
+async function loadCalendar() {
+  const today = jstDate();
+  if (calendarDate === today && calendarId) return;
+  const cals = await get('odpt:Calendar?odpt:operator=odpt.Operator:Toei');
+  const hit = cals.find(c => /Toei\.81-/.test(c['owl:sameAs']) && (c['odpt:day'] || []).includes(today));
+  calendarId = hit ? hit['owl:sameAs'] : null;
+  calendarDate = today;
+  const pts = await get('odpt:BusstopPoleTimetable?odpt:busstopPole=' + encodeURIComponent(POLE));
+  poleTT = pts
+    .filter(p => /Toei\.Nari10/.test(p['owl:sameAs']) && (!calendarId || p['odpt:calendar'] === calendarId))
+    .flatMap(p => p['odpt:busstopPoleTimetableObject'])
+    .filter(o => (o['odpt:destinationSign'] || '').includes('新橋'));
+}
+
+async function getTT(id) {
+  if (ttCache.has(id)) return ttCache.get(id);
+  const r = await get('odpt:BusTimetable?owl:sameAs=' + encodeURIComponent(id));
+  const tt = r[0] || null;
+  ttCache.set(id, tt);
+  return tt;
+}
+
+async function refresh() {
+  $('err').textContent = '';
+  try {
+    await loadCalendar();
+    const buses = (await Promise.all(ROUTES.map(r => get('odpt:Bus?odpt:busroute=' + encodeURIComponent(r))))).flat();
+    const now = new Date();
+    const live = [];
+    await Promise.all(buses.map(async b => {
+      const ttId = b['odpt:busTimetable'];
+      if (!ttId) return;
+      const tt = await getTT(ttId).catch(() => null);
+      if (!tt) return;
+      const objs = tt['odpt:busTimetableObject'];
+      const iMe = objs.findIndex(o => o['odpt:busstopPole'] === POLE);
+      if (iMe < 0) return;                                    // doesn't stop here / wrong direction
+      const from = b['odpt:fromBusstopPole'], to = b['odpt:toBusstopPole'];
+      let iFrom = objs.findIndex(o => o['odpt:busstopPole'] === from);
+      const iTo = objs.findIndex(o => o['odpt:busstopPole'] === to);
+      if (iFrom < 0 && iTo > 0) iFrom = iTo - 1;
+      if (iFrom < 0 || iFrom >= iMe) return;                  // already passed
+      const fromTime = b['odpt:fromBusstopPoleTime'] ? new Date(b['odpt:fromBusstopPoleTime']) : now;
+      const schFrom = toDate(objs[iFrom]['odpt:departureTime'] || objs[iFrom]['odpt:arrivalTime'], fromTime);
+      const meHM = objs[iMe]['odpt:departureTime'] || objs[iMe]['odpt:arrivalTime'];
+      const schMe = toDate(meHM, fromTime);
+      const delay = fromTime - schFrom;                      // ms (negative = early)
+      let eta = new Date(+schMe + delay);
+      // if bus seems stuck between stops, at least the scheduled remaining time from the next stop
+      if (iTo > 0 && iTo <= iMe) {
+        const schTo = toDate(objs[iTo]['odpt:arrivalTime'] || objs[iTo]['odpt:departureTime'], fromTime);
+        const rest = schMe - schTo;
+        if (+now + rest > +eta) eta = new Date(+now + rest);
+      }
+      if (eta < now) eta = now;
+      live.push({
+        eta, schMe, meHM, delayMin: Math.round(delay / 60000),
+        stopsAway: iMe - iFrom,
+        near: poleName(objs[iFrom]),
+        started: iFrom > 0 || fromTime <= now,
+        origin: poleName(objs[0]),
+        number: b['odpt:busNumber'],
+      });
+    }));
+    live.sort((a, b) => a.eta - b.eta);
+    const liveHM = new Set(live.map(l => l.meHM));
+    const sched = poleTT
+      .map(o => ({ hm: o['odpt:departureTime'], at: toDate(o['odpt:departureTime'], now) }))
+      .filter(s => s.at > now && !liveHM.has(s.hm))
+      .sort((a, b) => a.at - b.at);
+    state = { live, sched, fetchedAt: now };
+    render();
+  } catch (e) {
+    const blocked = e instanceof TypeError || e.name === 'SecurityError';
+    if (!state.fetchedAt && blocked) {
+      // Typically: opened inside a preview/sandbox that forbids network access
+      $('hero').innerHTML = `<div class="none" style="font-size:17px;line-height:1.7">
+        この画面からはバス情報サーバーに接続できません。</div>
+        <div class="info" style="text-align:left">
+        ・Claude アプリ内のプレビューなど、通信が制限された画面で開いていませんか？<br>
+        ・ファイルをダウンロードして <b>Chrome / Safari / Edge</b> で開くと動きます。<br>
+        ・ネットワーク（社内プロキシ等）で api-public.odpt.org がブロックされている可能性もあります。</div>
+        <p style="margin-top:14px"><a href="https://tobus.jp/sp/blsys/stop?stopid=938&ud=2&poleno=2&ln=ja&routecode=40" target="_blank" rel="noopener" style="color:var(--g);font-weight:700">今すぐ都バス公式の接近情報を見る →</a></p>`;
+    } else if (!state.fetchedAt) {
+      $('hero').innerHTML = '<div class="none">情報を取得できませんでした</div>';
+    }
+    $('err').textContent = '取得に失敗しました（' + e.message + '）。少し待って「更新」を押してください。';
+  }
+}
+
+const minsTo = d => Math.max(0, Math.ceil((d - Date.now()) / 60000));
+const delayTxt = m => m >= 2 ? `約${m}分遅れ` : '';
+
+function render() {
+  const { live, sched, fetchedAt } = state;
+  if (!fetchedAt) return;
+  const items = [
+    ...live.map(l => ({ kind: 'live', at: l.eta, l })),
+    ...sched.map(s => ({ kind: 'sched', at: s.at, s })),
+  ].sort((a, b) => a.at - b.at).filter(i => i.kind === 'live' || i.at > Date.now());
+
+  const hero = $('hero');
+  const first = items[0];
+  if (!first) {
+    hero.innerHTML = '<div class="none">本日の新橋行は終了しました</div>';
+  } else {
+    const m = minsTo(first.at);
+    const big = (first.kind === 'live' && m <= 1)
+      ? '<div class="soon">まもなく到着</div>'
+      : `<div class="min">${m}<small>分</small></div>`;
+    let info;
+    if (first.kind === 'live') {
+      const l = first.l;
+      info = `${l.stopsAway}つ前の停留所（${l.near}）を通過<br>到着予想 ${hhmm(l.eta)}（定刻 ${l.meHM}）${delayTxt(l.delayMin) ? '・' + delayTxt(l.delayMin) : ''}`;
+    } else {
+      info = `定刻 ${first.s.hm} 発<br>まだ走行中のバスはありません（時刻表ベース）`;
+    }
+    hero.innerHTML = `<div class="lbl">次の新橋行まで あと</div>${big}<div class="info">${info}</div>`;
+  }
+
+  $('list').innerHTML = items.slice(1, 6).map(i => {
+    if (i.kind === 'live') {
+      const l = i.l, m = minsTo(l.eta);
+      return `<li><div class="m">${m <= 1 ? '<span style="font-size:17px">まもなく</span>' : m + '<small>分</small>'}</div>
+        <div class="d"><span class="tag">走行中</span><b>${hhmm(l.eta)}</b> 頃（定刻 ${l.meHM}）<br>${l.stopsAway}つ前・${l.near}付近 ${delayTxt(l.delayMin)}</div></li>`;
+    }
+    return `<li class="sched"><div class="m">${minsTo(i.at)}<small>分</small></div>
+      <div class="d"><span class="tag s">時刻表</span><b>${i.s.hm}</b> 発</div></li>`;
+  }).join('') || '<li><div class="d">このあとの便はありません</div></li>';
+
+  $('upd').textContent = hhmm(fetchedAt) + ' 時点の情報';
+}
+
+$('reload').onclick = refresh;
+refresh();
+setInterval(refresh, REFRESH_MS);
+setInterval(render, 10000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>
